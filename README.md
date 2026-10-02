@@ -11,3 +11,4 @@ A lightweight API for exposing Git repository metadata, including the current br
 - Lightweight and easy to integrate
 - Written entirely in TypeScript
 
+**Please note this is an all-in-one file project. I do not have the motivation to make this a full thing**
