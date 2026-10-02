@@ -7,46 +7,23 @@ const PORT = Number(process.env.PORT ?? 3000);
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_API_URL =
   process.env.GITHUB_API_URL ?? "https://api.github.com";
+const TIMEZONE = process.env.TIMEZONE ?? "Europe/London";
 
 type GitHubRepository = {
-  name: string;
   full_name: string;
-  private: boolean;
   default_branch: string;
-  html_url: string;
 };
 
 type GitHubCommit = {
-  sha: string;
-  html_url: string;
   commit: {
-    message: string;
     author: {
-      name: string;
-      email: string;
-      date: string;
-    } | null;
-    committer: {
-      name: string;
-      email: string;
       date: string;
     } | null;
   };
-  author: {
-    login: string;
-    avatar_url: string;
-    html_url: string;
-  } | null;
-};
-
-type GitHubFile = {
-  content?: string;
-  encoding?: string;
 };
 
 type GitHubError = {
   message?: string;
-  documentation_url?: string;
 };
 
 class GitHubRequestError extends Error {
@@ -59,6 +36,24 @@ class GitHubRequestError extends Error {
   }
 }
 
+function formatDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: TIMEZONE,
+    timeZoneName: "short",
+  }).format(date);
+}
+
 async function github<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -69,9 +64,7 @@ async function github<T>(path: string): Promise<T> {
     headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
   }
 
-  const response = await fetch(`${GITHUB_API_URL}${path}`, {
-    headers,
-  });
+  const response = await fetch(`${GITHUB_API_URL}${path}`, { headers });
 
   if (response.ok) {
     return response.json() as Promise<T>;
@@ -92,15 +85,15 @@ async function github<T>(path: string): Promise<T> {
   throw new GitHubRequestError(response.status, message);
 }
 
+function repoPath(owner: string, repo: string): string {
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
 async function getRepository(
   owner: string,
   repo: string
 ): Promise<GitHubRepository> {
-  const path =
-    `/repos/${encodeURIComponent(owner)}` +
-    `/${encodeURIComponent(repo)}`;
-
-  return github<GitHubRepository>(path);
+  return github<GitHubRepository>(repoPath(owner, repo));
 }
 
 async function getBranchCommit(
@@ -108,77 +101,23 @@ async function getBranchCommit(
   repo: string,
   branch: string
 ): Promise<GitHubCommit> {
-  const path =
-    `/repos/${encodeURIComponent(owner)}` +
-    `/${encodeURIComponent(repo)}` +
-    `/commits/${encodeURIComponent(branch)}`;
-
-  return github<GitHubCommit>(path);
-}
-
-async function getVersion(
-  owner: string,
-  repo: string,
-  branch: string
-): Promise<string | null> {
-  const path =
-    `/repos/${encodeURIComponent(owner)}` +
-    `/${encodeURIComponent(repo)}` +
-    `/contents/package.json` +
-    `?ref=${encodeURIComponent(branch)}`;
-
-  try {
-    const file = await github<GitHubFile>(path);
-
-    if (!file.content || file.encoding !== "base64") {
-      return null;
-    }
-
-    try {
-      const packageJson = JSON.parse(
-        Buffer.from(file.content, "base64").toString("utf8")
-      );
-
-      if (typeof packageJson.version === "string") {
-        return packageJson.version;
-      }
-
-      return null;
-    } catch {
-      return null;
-    }
-  } catch (error) {
-    // package.json does not exist on this branch
-    if (
-      error instanceof GitHubRequestError &&
-      error.status === 404
-    ) {
-      return null;
-    }
-
-    return null;
-  }
+  return github<GitHubCommit>(
+    `${repoPath(owner, repo)}/commits/${encodeURIComponent(branch)}`
+  );
 }
 
 app.get("/github/:owner/:repo", async (req, res) => {
   const { owner, repo } = req.params;
 
   try {
-    const repository = await github<GitHubRepository>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
-    );
-
+    const repository = await getRepository(owner, repo);
     const branch = repository.default_branch;
-
-    const commit = await github<GitHubCommit>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}` +
-        `/commits/${encodeURIComponent(branch)}`
-    );
+    const commit = await getBranchCommit(owner, repo, branch);
 
     return res.json({
       repository: repository.full_name,
       branch,
-      commitDate: commit.commit.author?.date ?? null,
+      commitDate: formatDate(commit.commit.author?.date),
     });
   } catch (error) {
     console.error("GitBeacon error:", error);
@@ -202,21 +141,13 @@ app.get("/health", (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(
-    `GitBeacon running on http://localhost:${PORT}`
-  );
-
-  if (GITHUB_TOKEN) {
-    console.log(
-      "GitHub authentication: PAT configured"
-    );
-  } else {
-    console.log(
-      "GitHub authentication: none (public repositories only)"
-    );
-  }
+  console.log(`GitBeacon running on http://localhost:${PORT}`);
 
   console.log(
-    "GitHub branch: detected per repository"
+    GITHUB_TOKEN
+      ? "GitHub authentication: PAT configured"
+      : "GitHub authentication: none (public repositories only)"
   );
+
+  console.log(`Timezone: ${TIMEZONE}`);
 });
